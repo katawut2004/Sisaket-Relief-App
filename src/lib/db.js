@@ -12,7 +12,8 @@ if (!cached) {
   cached = global.mongoose = { conn: null, promise: null };
 }
 
-async function dbConnect() {
+// *** ต้องใช้ชื่อนี้ (connectToDatabase) เพื่อให้ตรงกับไฟล์ API ***
+export async function connectToDatabase() {
   if (cached.conn) {
     return cached.conn;
   }
@@ -26,8 +27,13 @@ async function dbConnect() {
       return mongoose;
     });
   }
-  cached.conn = await cached.promise;
+
+  try {
+    cached.conn = await cached.promise;
+  } catch (e) {
+    cached.promise = null;
+    throw e;
+  }
+
   return cached.conn;
 }
-
-export default dbConnect;

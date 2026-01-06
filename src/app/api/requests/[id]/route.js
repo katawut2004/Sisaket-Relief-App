@@ -1,4 +1,4 @@
-import dbConnect from '@/lib/db';
+import { connectToDatabase as dbConnect } from '@/lib/db';
 import Request from '@/models/Request';
 import Item from '@/models/Item';
 import { NextResponse } from 'next/server';

@@ -1,16 +1,20 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import * as XLSX from 'xlsx'; // เพิ่ม Library สำหรับอ่าน Excel
 
 export default function AdminDashboard() {
   const router = useRouter();
   const [items, setItems] = useState([]);
   const [requests, setRequests] = useState([]);
   
+  // State สำหรับการ Upload
+  const [isUploading, setIsUploading] = useState(false);
+  
   // Form State สำหรับเพิ่มของ
   const [newItem, setNewItem] = useState({ 
     name: '', 
-    category: 'consumables', // ค่าเริ่มต้นให้ตรงกับ enum
+    category: 'consumables', 
     quantity: 0, 
     unit: '' 
   });
@@ -42,11 +46,67 @@ export default function AdminDashboard() {
     }
   };
 
-  // ฟังก์ชันเพิ่มสินค้า
+  // --- ฟังก์ชัน Import Excel ---
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setIsUploading(true);
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const workbook = XLSX.read(event.target.result, { type: 'binary' });
+        const sheetName = workbook.SheetNames[0]; // อ่าน Sheet แรก
+        const sheet = workbook.Sheets[sheetName];
+        const rawData = XLSX.utils.sheet_to_json(sheet);
+
+        // แปลงหัวข้อภาษาไทย -> Field ใน Database
+        const formattedData = rawData.map(row => ({
+          name: row['ชื่อสินค้า'],
+          category: row['หมวดหมู่'] || 'consumables', // ค่า default
+          quantity: row['จำนวน'] || 0,
+          unit: row['หน่วย'] || 'หน่วย',
+          lastUpdated: new Date()
+        }));
+
+        if (formattedData.length === 0) {
+            alert('ไม่พบข้อมูลในไฟล์ Excel');
+            setIsUploading(false);
+            return;
+        }
+
+        // ส่งข้อมูลไปยัง API
+        const response = await fetch('/api/items/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(formattedData),
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          alert(`✅ นำเข้าข้อมูลสำเร็จ ${result.count} รายการ`);
+          fetchData(); // รีโหลดตาราง
+          e.target.value = ''; // เคลียร์ช่อง input
+        } else {
+          alert('❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล');
+        }
+
+      } catch (error) {
+        console.error(error);
+        alert('❌ อ่านไฟล์ Excel ไม่สำเร็จ (ตรวจสอบรูปแบบไฟล์)');
+      } finally {
+        setIsUploading(false);
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+  // ------------------------------------
+
+  // ฟังก์ชันเพิ่มสินค้า (ทีละชิ้น)
   const handleAddItem = async (e) => {
     e.preventDefault();
     
-    // ตรวจสอบค่าว่างเบื้องต้น
     if(!newItem.name || !newItem.unit || newItem.quantity < 0) {
       alert("กรุณากรอกข้อมูลให้ครบและถูกต้อง");
       return;
@@ -65,10 +125,9 @@ export default function AdminDashboard() {
         throw new Error(data.error || 'บันทึกไม่สำเร็จ');
       }
 
-      // ถ้าสำเร็จ
       alert('✅ เพิ่มสินค้าเรียบร้อยแล้ว');
-      setNewItem({ name: '', category: 'consumables', quantity: 0, unit: '' }); // เคลียร์ค่า
-      fetchData(); // โหลดตารางใหม่
+      setNewItem({ name: '', category: 'consumables', quantity: 0, unit: '' });
+      fetchData();
 
     } catch (error) {
       alert(`❌ เกิดข้อผิดพลาด: ${error.message}`);
@@ -76,24 +135,18 @@ export default function AdminDashboard() {
     }
   };
 
-  // >>> ฟังก์ชันแก้ไขจำนวนสินค้า (เพิ่มใหม่) <<<
+  // ฟังก์ชันแก้ไขจำนวนสินค้า
   const handleEditItem = async (item) => {
-    // 1. เด้ง Popup ถามจำนวนใหม่
     const rawValue = prompt(`แก้ไขจำนวนคงเหลือของ "${item.name}"`, item.quantity);
-    
-    // 2. ถ้ากด Cancel หรือไม่กรอกอะไร ให้จบการทำงาน
     if (rawValue === null || rawValue.trim() === "") return;
     
-    // 3. แปลงค่าเป็นตัวเลข (รองรับการใส่ลูกน้ำ เช่น 1,000)
     const newQuantity = parseInt(rawValue.replace(/,/g, ''), 10);
 
-    // 4. ตรวจสอบความถูกต้อง
     if (isNaN(newQuantity) || newQuantity < 0) {
       alert("กรุณากรอกตัวเลขที่ถูกต้อง (ห้ามติดลบ)");
       return;
     }
 
-    // 5. ส่ง API ไปอัปเดต
     try {
       const res = await fetch(`/api/items/${item._id}`, {
         method: 'PUT',
@@ -106,24 +159,35 @@ export default function AdminDashboard() {
       }
 
       alert('✅ อัปเดตยอดคงเหลือเรียบร้อย');
-      fetchData(); // โหลดตารางใหม่ทันที
+      fetchData();
     } catch (error) {
       alert(`❌ เกิดข้อผิดพลาด: ${error.message}`);
     }
   };
 
-  // ลบสินค้า
+  // --- ส่วนที่แก้ไข: ลบสินค้าแบบแจ้งเตือน Error ---
   const handleDeleteItem = async (id) => {
     if(!confirm('ยืนยันการลบสินค้านี้?')) return;
     try {
-      await fetch(`/api/items/${id}`, { method: 'DELETE' });
-      fetchData();
+      const res = await fetch(`/api/items/${id}`, { method: 'DELETE' });
+      
+      // เช็คว่า Server ตอบกลับมาว่า OK หรือไม่
+      if (!res.ok) {
+          const errorData = await res.json();
+          // โยน Error ออกไปที่ catch เพื่อแสดง Alert
+          throw new Error(errorData.error || 'ลบสินค้าไม่สำเร็จ (Server Error)');
+      }
+
+      // ถ้าลบสำเร็จ
+      alert('✅ ลบสินค้าเรียบร้อย');
+      fetchData(); 
     } catch (error) {
-      alert('ลบสินค้าไม่สำเร็จ');
+      // แสดงข้อความ Error ที่แท้จริง
+      alert(`❌ เกิดข้อผิดพลาด: ${error.message}`);
     }
   };
 
-  // จัดการคำร้อง (อนุมัติ/ปฏิเสธ)
+  // จัดการคำร้อง
   const handleRequestAction = async (id, status) => {
     try {
       const res = await fetch(`/api/requests/${id}`, {
@@ -207,10 +271,34 @@ export default function AdminDashboard() {
 
         {/* ฝั่งขวา: จัดการสินค้าในคลัง */}
         <div className="col-lg-6">
-          {/* ฟอร์มเพิ่มสินค้า */}
+          
+          {/* >>> ส่วน Import Excel (เพิ่มใหม่) <<< */}
+          <div className="card shadow-sm mb-4 border-success border-top border-4">
+            <div className="card-header bg-white">
+              <h5 className="mb-0 text-success"><i className="fas fa-file-excel me-2"></i>นำเข้าข้อมูลจาก Excel</h5>
+            </div>
+            <div className="card-body bg-white">
+              <div className="mb-2">
+                <input
+                  type="file"
+                  accept=".xlsx, .xls"
+                  onChange={handleFileUpload}
+                  disabled={isUploading}
+                  className="form-control"
+                />
+              </div>
+              <small className="text-muted d-block">
+                <i className="fas fa-info-circle me-1"></i>
+                ไฟล์ต้องมีหัวตาราง: <b>ชื่อสินค้า, หมวดหมู่, จำนวน, หน่วย</b>
+              </small>
+              {isUploading && <div className="text-success mt-2 small"><i className="fas fa-spinner fa-spin me-1"></i> กำลังอัปโหลด...</div>}
+            </div>
+          </div>
+
+          {/* ฟอร์มเพิ่มสินค้า (Manual) */}
           <div className="card shadow-sm mb-4 border-primary border-top border-4">
             <div className="card-header bg-white">
-              <h5 className="mb-0 text-primary"><i className="fas fa-plus-circle me-2"></i>เพิ่มสินค้าใหม่</h5>
+              <h5 className="mb-0 text-primary"><i className="fas fa-plus-circle me-2"></i>เพิ่มสินค้าใหม่ (รายชิ้น)</h5>
             </div>
             <div className="card-body bg-white">
               <form onSubmit={handleAddItem} className="row g-2">
@@ -301,7 +389,6 @@ export default function AdminDashboard() {
                         <span className="small text-muted ms-1">{item.unit}</span>
                       </td>
                       <td className="text-end">
-                        {/* ปุ่มแก้ไข (เพิ่มใหม่) */}
                         <button 
                           onClick={() => handleEditItem(item)} 
                           className="btn btn-sm btn-outline-warning border-0 me-1" 
@@ -309,8 +396,6 @@ export default function AdminDashboard() {
                         >
                           <i className="fas fa-pen"></i>
                         </button>
-                        
-                        {/* ปุ่มลบ */}
                         <button 
                           onClick={() => handleDeleteItem(item._id)} 
                           className="btn btn-sm btn-outline-danger border-0"
